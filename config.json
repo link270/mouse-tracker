@@ -1,0 +1,31 @@
+{
+  "update_interval_ms": 16,
+  "persist_duration": 2,
+  "fade_duration": 0.75,
+  "cursor_ring_radius": 24,
+  "cursor_ring_thickness": 4,
+  "cursor_ring_color": [0, 180, 255, 180],
+  "click_radius": 18,
+  "click_outline_thickness": 3,
+  "click_colors": {
+    "left": [0, 255, 128, 200],
+    "right": [255, 80, 80, 200],
+    "middle": [255, 200, 0, 200]
+  },
+  "drag_color": [120, 200, 255, 180],
+  "drag_line_width": 4,
+  "min_point_distance": 2.0,
+  "exit_hotkey": "ctrl+shift+q",
+  "cursor_idle_timeout": 2.5,
+  "cursor_idle_fade_duration": 1.0,
+  "click_effect_loop_time": 0.4,
+  "click_effect_duration": 0.9,
+  "click_effect_fade_duration": 0.3,
+  "cursor_draw_shrink_time": 0.12,
+  "cursor_tail_color": [0, 180, 255, 140],
+  "cursor_tail_width": 4,
+  "cursor_tail_max_age": 0.2,
+  "cursor_tail_min_distance": 2.0,
+  "cursor_tail_max_length": 80.0,
+  "max_click_markers": 8
+}
