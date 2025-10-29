@@ -18,7 +18,18 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple, Set
 
 from pynput import mouse, keyboard
 from PySide6.QtCore import QObject, QPointF, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QCursor, QGuiApplication, QPainter, QPainterPath, QPen, QFont
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QCursor,
+    QGuiApplication,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QFont,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -33,6 +44,8 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QMessageBox,
     QGroupBox,
+    QMenu,
+    QSystemTrayIcon,
 )
 from PySide6.QtCore import QSignalBlocker
 
@@ -1360,6 +1373,10 @@ class ControlPanel(QWidget):
         super().__init__()
         self.overlay = overlay
         self.config_path = Path(config_path)
+        self._allow_close = False
+        self._tray_icon_supported = False
+        self._tray_icon: Optional[QSystemTrayIcon] = None
+        self._tray_message_shown = False
 
         self.setWindowTitle("Overlay Controls")
         self.setWindowFlag(Qt.Tool)
@@ -1384,6 +1401,7 @@ class ControlPanel(QWidget):
         self._refresh_config_editor(initial=True)
         self._sync_toggles_with_overlay()
         self._update_hotkey_titles()
+        self._tray_icon_supported = self._init_tray_icon()
 
     def _create_toggle_tab(self) -> QWidget:
         container = QWidget()
@@ -1520,6 +1538,95 @@ class ControlPanel(QWidget):
         for hotkey_key, group in self.hotkey_groups.items():
             self._apply_group_title(group, hotkey_key)
 
+    def closeEvent(self, event):
+        if self._allow_close or not self._tray_icon_supported:
+            super().closeEvent(event)
+            return
+        event.ignore()
+        self.hide()
+        self._show_tray_message_once()
+
+    def prepare_for_exit(self):
+        self._allow_close = True
+        if self._tray_icon:
+            self._tray_icon.hide()
+
+    def _init_tray_icon(self) -> bool:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return False
+        icon = QSystemTrayIcon(self)
+        icon.setIcon(self._build_tray_icon())
+        icon.setToolTip("Mouse Tracker Overlay")
+
+        menu = QMenu(self)
+        open_action = QAction("Open Overlay Controls", self)
+        open_action.triggered.connect(self._show_from_tray)
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(self.overlay._request_quit)
+        menu.addAction(open_action)
+        menu.addSeparator()
+        menu.addAction(quit_action)
+        icon.setContextMenu(menu)
+        icon.activated.connect(self._on_tray_activated)
+        icon.show()
+        self._tray_icon = icon
+        return True
+
+    def _build_tray_icon(self) -> QIcon:
+        size = 64
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        base_color = self.overlay.config.get("cursor_ring_color")
+        color = QColor(base_color) if isinstance(base_color, QColor) else QColor(0, 180, 255)
+        color.setAlpha(255)
+
+        center = pixmap.rect().center()
+        radius = size // 3
+
+        painter.setBrush(color)
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(center, radius, radius)
+
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor("#1e1e1e"), 3))
+        painter.drawEllipse(center, radius, radius)
+
+        painter.setBrush(QColor("#ffffff"))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(center, radius // 2, radius // 2)
+
+        painter.end()
+
+        return QIcon(pixmap)
+
+    def _show_from_tray(self):
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.raise_()
+        self.activateWindow()
+        self._tray_message_shown = False
+
+    def _show_tray_message_once(self):
+        if not self._tray_icon or self._tray_message_shown:
+            return
+        self._tray_icon.showMessage(
+            "Mouse Tracker Overlay",
+            "Overlay is still running in the system tray.",
+            QSystemTrayIcon.Information,
+            3000,
+        )
+        self._tray_message_shown = True
+
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason):
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self._show_from_tray()
+
     def _set_status(self, message: str, ok: bool):
         color = "#7dd87d" if ok else "#ff6f6f"
         self.status_label.setStyleSheet(f"color: {color};")
@@ -1560,6 +1667,7 @@ def main():
         panel = ControlPanel(overlay, CONFIG_PATH)
         panel.show()
         overlay.control_panel = panel
+        app.aboutToQuit.connect(panel.prepare_for_exit)
         app.aboutToQuit.connect(panel.close)
     app.aboutToQuit.connect(overlay.close)
     sys.exit(app.exec())
