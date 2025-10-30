@@ -22,6 +22,17 @@ pip install -r requirements.txt
 python mouse_overlay.py
 ```
 
+This launches the always-on-top overlay and a minimal control panel where you can toggle individual effects or edit `config.json` live. Pass `--nogui` if you want to run only the overlay without the control panel.
+
+Keyboard shortcuts (customize them in `config.json`):
+
+- `Ctrl+Shift+Q` — quit the overlay
+- `Ctrl+Shift+A` — toggle freehand drawing
+- `Ctrl+Shift+S` — toggle cursor ring + comet tail
+- `Ctrl+Shift+D` — toggle all click effects
+- `Ctrl+Shift+F` — hold to spotlight the cursor
+
+You can also click the control panel's quit button to exit. Adjust any other values in the same file to tweak colors, sizes, timings, or behavior; changes apply immediately when saved from the panel or on the next launch.
 Press `Ctrl+Shift+Q` to exit the overlay (customize `exit_hotkey` in `config.json`). Adjust any other values in the same file to tweak colors, sizes, timings, or behavior; changes apply the next time you launch the script.
 
 ## Keyboard display

@@ -4,15 +4,40 @@
   "fade_duration": 0.75,
   "cursor_ring_radius": 24,
   "cursor_ring_thickness": 3,
-  "cursor_ring_color": [0, 180, 255, 180],
+  "cursor_ring_color": [
+    0,
+    180,
+    255,
+    180
+  ],
   "click_radius": 18,
   "click_outline_thickness": 3,
   "click_colors": {
-    "left": [0, 255, 128, 200],
-    "right": [255, 80, 80, 200],
-    "middle": [255, 200, 0, 200]
+    "left": [
+      0,
+      255,
+      128,
+      200
+    ],
+    "right": [
+      255,
+      80,
+      80,
+      200
+    ],
+    "middle": [
+      255,
+      200,
+      0,
+      200
+    ]
   },
-  "drag_color": [120, 200, 255, 180],
+  "drag_color": [
+    120,
+    200,
+    255,
+    180
+  ],
   "drag_line_width": 3,
   "min_point_distance": 2.0,
   "exit_hotkey": "ctrl+shift+q",
@@ -21,11 +46,29 @@
   "click_effect_loop_time": 0.45,
   "click_effect_duration": 0.25,
   "click_effect_fade_duration": 0.1,
+  "max_click_markers": 8,
   "cursor_draw_shrink_time": 0.12,
-  "cursor_tail_color": [0, 180, 255, 140],
+  "toggle_paint_hotkey": "ctrl+shift+a",
+  "toggle_tracking_hotkey": "ctrl+shift+s",
+  "toggle_click_hotkey": "ctrl+shift+d",
+  "enable_click_left": true,
+  "enable_click_right": true,
+  "enable_click_middle": true,
+  "enable_painting": true,
+  "enable_cursor_ring": true,
+  "enable_cursor_tail": true,
+  "enable_focus_overlay": true,
+  "focus_overlay_hotkey": "ctrl+shift+f",
+  "focus_overlay_radius": 140.0,
+  "focus_overlay_opacity": 0.65,
+  "cursor_tail_color": [
+    0,
+    180,
+    255,
+    140
+  ],
   "cursor_tail_width": 4,
   "cursor_tail_max_age": 0.2,
   "cursor_tail_min_distance": 2.0,
-  "cursor_tail_max_length": 80.0,
-  "max_click_markers": 8
+  "cursor_tail_max_length": 80.0
 }
