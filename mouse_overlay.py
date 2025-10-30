@@ -13,10 +13,10 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from pynput import mouse, keyboard
-from PySide6.QtCore import QObject, QPointF, QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QPointF, QRectF, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QCursor, QGuiApplication, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -51,6 +51,19 @@ DEFAULT_CONFIG: Dict[str, object] = {
     "cursor_tail_max_age": 0.15,
     "cursor_tail_min_distance": 2.0,
     "cursor_tail_max_length": 40.0,
+    "key_display_enabled": True,
+    "key_display_font_size": 18,
+    "key_display_height": 42,
+    "key_display_margin": 18,
+    "key_display_spacing": 12,
+    "key_display_padding": 14,
+    "key_display_rise_distance": 36,
+    "key_display_press_duration": 0.12,
+    "key_display_release_duration": 0.14,
+    "key_display_background": [20, 20, 20, 220],
+    "key_display_text_color": [255, 255, 255, 235],
+    "key_display_max_visible": 6,
+    "key_display_corner_radius": 10,
 }
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
@@ -140,9 +153,27 @@ def _normalize_config(raw: Dict[str, object]) -> Dict[str, object]:
     config["cursor_tail_min_distance"] = float(config.get("cursor_tail_min_distance", 0.0))
     config["cursor_tail_max_length"] = float(config.get("cursor_tail_max_length", 0.0))
 
+    config["key_display_enabled"] = bool(config.get("key_display_enabled", False))
+    config["key_display_font_size"] = float(config.get("key_display_font_size", 0.0))
+    config["key_display_height"] = float(config.get("key_display_height", 0.0))
+    config["key_display_margin"] = float(config.get("key_display_margin", 0.0))
+    config["key_display_spacing"] = float(config.get("key_display_spacing", 0.0))
+    config["key_display_padding"] = float(config.get("key_display_padding", 0.0))
+    config["key_display_rise_distance"] = float(config.get("key_display_rise_distance", 0.0))
+    config["key_display_press_duration"] = float(config.get("key_display_press_duration", 0.0))
+    config["key_display_release_duration"] = float(config.get("key_display_release_duration", 0.0))
+    config["key_display_max_visible"] = int(config.get("key_display_max_visible", 0))
+    config["key_display_corner_radius"] = float(config.get("key_display_corner_radius", 0.0))
+
     config["cursor_ring_color"] = _to_qcolor(config["cursor_ring_color"])
     config["drag_color"] = _to_qcolor(config["drag_color"])
     config["cursor_tail_color"] = _to_qcolor(config.get("cursor_tail_color", config["cursor_ring_color"]))
+    config["key_display_background"] = _to_qcolor(
+        config.get("key_display_background", [20, 20, 20, 220])
+    )
+    config["key_display_text_color"] = _to_qcolor(
+        config.get("key_display_text_color", [255, 255, 255, 235])
+    )
 
     click_colors_raw = config.get("click_colors", {})
     if not isinstance(click_colors_raw, dict):
@@ -229,6 +260,22 @@ class Stroke:
     active: bool = True
 
 
+@dataclass
+class KeyIndicator:
+    identifier: str
+    label: str
+    pressed_at: float
+    released_at: Optional[float] = None
+
+    def copy(self) -> KeyIndicator:
+        return KeyIndicator(
+            identifier=self.identifier,
+            label=self.label,
+            pressed_at=self.pressed_at,
+            released_at=self.released_at,
+        )
+
+
 class OverlayWindow(QWidget):
     def __init__(self, config: dict):
         super().__init__()
@@ -257,6 +304,13 @@ class OverlayWindow(QWidget):
         self._press_markers: Dict[str, Optional[ClickMarker]] = {"left": None, "right": None, "middle": None}
         self.cursor_tail: List[tuple[float, QPointF]] = []
         self._cursor_tail_min_distance_sq = float(self.config["cursor_tail_min_distance"]) ** 2
+        self._key_listener: Optional[keyboard.Listener] = None
+        self._active_keys: Dict[str, KeyIndicator] = {}
+        self._key_display_order: List[str] = []
+        self._key_display_enabled = bool(self.config.get("key_display_enabled", False))
+        self._key_press_duration = float(self.config.get("key_display_press_duration", 0.0))
+        self._key_release_duration = float(self.config.get("key_display_release_duration", 0.0))
+        self._key_max_visible = int(self.config.get("key_display_max_visible", 0))
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_timer_tick)
@@ -267,6 +321,7 @@ class OverlayWindow(QWidget):
             on_click=self._on_click,
         )
         self._listener.start()
+        self._start_key_listener()
         self._start_hotkey_listener()
 
     def _compute_virtual_geometry(self):
@@ -322,6 +377,9 @@ class OverlayWindow(QWidget):
             for stroke in self.completed_strokes
             if (now - stroke.created_at) <= persist
         ]
+
+        if self._key_display_enabled:
+            self._prune_inactive_keys_locked(now)
 
     def _on_move(self, x: float, y: float):
         if not self.left_button_down:
@@ -404,6 +462,151 @@ class OverlayWindow(QWidget):
             return None
         return None
 
+    def _on_key_press(self, key):
+        if not self._key_display_enabled:
+            return
+        identifier = self._key_identifier(key)
+        if not identifier:
+            return
+        label = self._key_label(key)
+        if not label:
+            return
+        now = time.time()
+        with self._lock:
+            indicator = self._active_keys.get(identifier)
+            if indicator:
+                indicator.pressed_at = now
+                indicator.released_at = None
+            else:
+                indicator = KeyIndicator(identifier=identifier, label=label, pressed_at=now)
+                self._active_keys[identifier] = indicator
+            if identifier in self._key_display_order:
+                self._key_display_order.remove(identifier)
+            self._key_display_order.append(identifier)
+            self._enforce_key_limit_locked()
+
+    def _on_key_release(self, key):
+        if not self._key_display_enabled:
+            return
+        identifier = self._key_identifier(key)
+        if not identifier:
+            return
+        now = time.time()
+        with self._lock:
+            indicator = self._active_keys.get(identifier)
+            if not indicator:
+                return
+            indicator.released_at = now
+
+    @staticmethod
+    def _key_identifier(key) -> Optional[str]:
+        if isinstance(key, keyboard.KeyCode):
+            if key.char:
+                return f"char:{key.char}"
+            if key.vk is not None:
+                return f"vk:{key.vk}"
+            return None
+        if isinstance(key, keyboard.Key):
+            name = getattr(key, "name", None)
+            if name:
+                return f"key:{name}"
+            value = getattr(key, "value", None)
+            vk = getattr(value, "vk", None) if value else None
+            if vk is not None:
+                return f"key:{vk}"
+        as_text = str(key)
+        if not as_text:
+            return None
+        return f"repr:{as_text}"
+
+    @staticmethod
+    def _key_label(key) -> str:
+        if isinstance(key, keyboard.KeyCode):
+            if key.char:
+                return key.char.upper()
+            if key.vk is not None:
+                return f"VK {key.vk}"
+        if isinstance(key, keyboard.Key):
+            name = getattr(key, "name", "") or str(key)
+            if name.startswith("Key."):
+                name = name[4:]
+            mapping = {
+                "space": "SPACE",
+                "enter": "ENTER",
+                "return": "ENTER",
+                "esc": "ESC",
+                "escape": "ESC",
+                "shift": "SHIFT",
+                "shift_l": "SHIFT",
+                "shift_r": "SHIFT",
+                "ctrl": "CTRL",
+                "ctrl_l": "CTRL",
+                "ctrl_r": "CTRL",
+                "alt": "ALT",
+                "alt_l": "ALT",
+                "alt_r": "ALT",
+                "cmd": "CMD",
+                "cmd_l": "CMD",
+                "cmd_r": "CMD",
+                "tab": "TAB",
+                "caps_lock": "CAPS LOCK",
+                "backspace": "BACKSPACE",
+                "delete": "DEL",
+                "enter_l": "ENTER",
+                "up": "UP",
+                "down": "DOWN",
+                "left": "LEFT",
+                "right": "RIGHT",
+                "page_up": "PAGE UP",
+                "page_down": "PAGE DOWN",
+                "home": "HOME",
+                "end": "END",
+            }
+            if name in mapping:
+                return mapping[name]
+            return name.replace("_", " ").upper()
+        text = str(key)
+        if text.startswith("Key."):
+            text = text[4:]
+        return text.replace("_", " ").upper()
+
+    def _enforce_key_limit_locked(self):
+        limit = self._key_max_visible
+        if limit <= 0:
+            return
+        while len(self._key_display_order) > limit:
+            candidate = None
+            for key_id in self._key_display_order:
+                indicator = self._active_keys.get(key_id)
+                if indicator and indicator.released_at is not None:
+                    candidate = key_id
+                    break
+            if candidate is None:
+                candidate = self._key_display_order[0]
+            if candidate in self._active_keys:
+                del self._active_keys[candidate]
+            self._key_display_order = [key_id for key_id in self._key_display_order if key_id != candidate]
+
+    def _prune_inactive_keys_locked(self, now: float):
+        if not self._key_display_order:
+            return
+        release_duration = self._key_release_duration
+        keep_order: List[str] = []
+        for key_id in self._key_display_order:
+            indicator = self._active_keys.get(key_id)
+            if not indicator:
+                continue
+            if indicator.released_at is not None:
+                elapsed = now - indicator.released_at
+                if release_duration <= 0.0 and elapsed >= 0.0:
+                    del self._active_keys[key_id]
+                    continue
+                if release_duration > 0.0 and elapsed >= release_duration:
+                    del self._active_keys[key_id]
+                    continue
+            keep_order.append(key_id)
+        self._key_display_order = keep_order
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
@@ -419,6 +622,15 @@ class OverlayWindow(QWidget):
             strokes_snapshot = list(self.completed_strokes)
             active_stroke = self.active_stroke.points.copy() if self.active_stroke else None
             active_color = QColor(self.active_stroke.color) if self.active_stroke else None
+            key_indicators_snapshot = (
+                [
+                    self._active_keys[key_id].copy()
+                    for key_id in self._key_display_order
+                    if key_id in self._active_keys
+                ]
+                if self._key_display_enabled
+                else []
+            )
 
         self._draw_cursor_tail(painter, cursor_tail_snapshot, now)
         self._draw_cursor_ring(painter, cursor_pos, now, click_markers_snapshot)
@@ -426,6 +638,7 @@ class OverlayWindow(QWidget):
         self._draw_strokes(painter, strokes_snapshot, now, persist, fade)
         if active_stroke:
             self._draw_active_stroke(painter, active_stroke, active_color)
+        self._draw_key_indicators(painter, key_indicators_snapshot, now)
 
     def _draw_cursor_ring(
         self,
@@ -726,6 +939,96 @@ class OverlayWindow(QWidget):
             path.lineTo(point)
         painter.drawPath(path)
 
+    def _draw_key_indicators(self, painter: QPainter, indicators: List[KeyIndicator], now: float):
+        if not self._key_display_enabled or not indicators:
+            return
+
+        drawables: List[Tuple[KeyIndicator, float]] = []
+        for indicator in indicators:
+            visibility = self._key_visibility(indicator, now)
+            if visibility <= 0.0:
+                continue
+            drawables.append((indicator, visibility))
+
+        if not drawables:
+            return
+
+        painter.save()
+        font_size = self.config["key_display_font_size"]
+        if font_size > 0.0:
+            font = painter.font()
+            font.setPointSizeF(font_size)
+            painter.setFont(font)
+        metrics = painter.fontMetrics()
+
+        padding = max(0.0, self.config["key_display_padding"])
+        spacing = max(0.0, self.config["key_display_spacing"])
+        margin = max(0.0, self.config["key_display_margin"])
+        requested_height = self.config["key_display_height"]
+        base_height = requested_height if requested_height > 0.0 else metrics.height() + 2.0 * padding
+        rise = max(0.0, self.config["key_display_rise_distance"])
+        corner_radius = max(0.0, self.config["key_display_corner_radius"])
+        base_bg: QColor = self.config["key_display_background"]
+        base_text: QColor = self.config["key_display_text_color"]
+
+        measured: List[Tuple[KeyIndicator, float, float]] = []
+        for indicator, visibility in drawables:
+            text_width = metrics.horizontalAdvance(indicator.label)
+            box_width = text_width + 2.0 * padding
+            measured.append((indicator, visibility, box_width))
+
+        total_width = sum(item[2] for item in measured)
+        if len(measured) > 1:
+            total_width += spacing * (len(measured) - 1)
+
+        x = margin
+        base_y = self.height() - margin - base_height
+
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        for indicator, visibility, box_width in measured:
+            top_offset = (1.0 - visibility) * rise
+            rect = QRectF(x, base_y + top_offset, box_width, base_height)
+
+            background = QColor(base_bg)
+            background.setAlphaF(background.alphaF() * visibility)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(background)
+            painter.drawRoundedRect(rect, corner_radius, corner_radius)
+
+            text_color = QColor(base_text)
+            text_color.setAlphaF(text_color.alphaF() * visibility)
+            painter.setPen(text_color)
+            painter.drawText(rect, Qt.AlignCenter, indicator.label)
+
+            x += box_width + spacing
+
+        painter.restore()
+
+    def _key_visibility(self, indicator: KeyIndicator, now: float) -> float:
+        if indicator.released_at is None:
+            if self._key_press_duration <= 0.0:
+                return 1.0
+            elapsed = max(0.0, now - indicator.pressed_at)
+            progress = elapsed / max(self._key_press_duration, 1e-6)
+            return self._ease_out_cubic(min(1.0, max(0.0, progress)))
+
+        if self._key_release_duration <= 0.0:
+            return 0.0
+
+        elapsed = max(0.0, now - indicator.released_at)
+        progress = elapsed / max(self._key_release_duration, 1e-6)
+        return max(0.0, 1.0 - self._ease_in_cubic(min(1.0, max(0.0, progress))))
+
+    @staticmethod
+    def _ease_out_cubic(value: float) -> float:
+        value = max(0.0, min(1.0, value))
+        return 1.0 - pow(1.0 - value, 3)
+
+    @staticmethod
+    def _ease_in_cubic(value: float) -> float:
+        value = max(0.0, min(1.0, value))
+        return pow(value, 3)
+
     def _cursor_idle_alpha(self, now: float) -> float:
         timeout = max(0.0, self.config["cursor_idle_timeout"])
         fade = max(0.0, self.config["cursor_idle_fade_duration"])
@@ -770,6 +1073,10 @@ class OverlayWindow(QWidget):
     def closeEvent(self, event):
         self._listener.stop()
         self._listener.join(timeout=0.2)
+        if self._key_listener:
+            self._key_listener.stop()
+            self._key_listener.join(timeout=0.2)
+            self._key_listener = None
         if self._hotkey_listener:
             self._hotkey_listener.stop()
             self._hotkey_listener = None
@@ -874,6 +1181,23 @@ class OverlayWindow(QWidget):
                 file=sys.stderr,
             )
             self._hotkey_listener = None
+
+    def _start_key_listener(self):
+        if not self._key_display_enabled:
+            return
+        try:
+            self._key_listener = keyboard.Listener(
+                on_press=self._on_key_press,
+                on_release=self._on_key_release,
+            )
+            self._key_listener.start()
+        except Exception as exc:  # noqa: BLE001 - key overlay is optional
+            print(
+                f"Warning: unable to start key listener: {exc}",
+                file=sys.stderr,
+            )
+            self._key_listener = None
+            self._key_display_enabled = False
 
     def _request_quit(self):
         self._quit_dispatcher.quit_requested.emit()
